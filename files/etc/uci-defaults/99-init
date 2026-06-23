@@ -1,0 +1,56 @@
+#!/bin/sh
+# ============================================================
+# 首次启动初始化（uci-defaults，只执行一次）
+# ImmortalWrt 24.10 · WH3000 Pro
+# ============================================================
+
+# ── IP（diy-part2.sh 若未能修改 config_generate，这里兜底）─
+uci set network.lan.ipaddr='192.168.10.1'
+uci commit network
+
+# ── 主机名 ──────────────────────────────────────────────────
+uci set system.@system[0].hostname='WH3000-Pro'
+uci set system.@system[0].timezone='CST-8'
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci commit system
+
+# ── NTP（国内源）────────────────────────────────────────────
+uci delete system.ntp.server
+uci add_list system.ntp.server='ntp.aliyun.com'
+uci add_list system.ntp.server='time1.cloud.tencent.com'
+uci add_list system.ntp.server='cn.pool.ntp.org'
+uci commit system
+
+# ── BBR 拥塞控制 ─────────────────────────────────────────────
+{
+  echo "net.core.default_qdisc=fq"
+  echo "net.ipv4.tcp_congestion_control=bbr"
+} >> /etc/sysctl.conf
+
+# ── Docker daemon 配置 ───────────────────────────────────────
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'DOCKEREOF'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  },
+  "registry-mirrors": [
+    "https://mirror.ccs.tencentyun.com"
+  ],
+  "data-root": "/mnt/docker"
+}
+DOCKEREOF
+
+# ── 开机启动 ─────────────────────────────────────────────────
+/etc/init.d/irqbalance enable 2>/dev/null || true
+
+# ── uhttpd 保持连接优化 ──────────────────────────────────────
+uci set uhttpd.main.http_keepalive='20'
+uci set uhttpd.main.tcp_keepalive='1'
+uci commit uhttpd
+
+echo "99-init: 初始化完成"
+exit 0
+
