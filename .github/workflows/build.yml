@@ -18,14 +18,14 @@ on:
 env:
   # ── 源码选择（二选一，默认用官方 ImmortalWrt openwrt-24.10）──────
   # 选项 A：官方 ImmortalWrt（WH3000 Pro 从 24.10.x 起原生支持）
-  REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-24.10
+  # REPO_URL: https://github.com/immortalwrt/immortalwrt
+  # REPO_BRANCH: openwrt-24.10
 
   # 选项 B：immortalwrt-mt798x（MediaTek 闭源驱动，WiFi 稳定性更好）
   # 若要换此源，注释掉上面两行，取消注释下面两行，同时将 config 中
   # CONFIG_PACKAGE_wpad-openssl-mbedtls 改为 CONFIG_PACKAGE_kmod-mt76=y
-  # REPO_URL: https://github.com/immortalwrt-mt798x/immortalwrt
-  # REPO_BRANCH: openwrt-24.10
+   REPO_URL: https://github.com/immortalwrt-mt798x/immortalwrt
+   REPO_BRANCH: openwrt-24.10
 
   CONFIG_FILE: wh3000pro.config
   DIY_P1_SH: scripts/diy-part1.sh
@@ -59,6 +59,8 @@ jobs:
           sudo apt-get clean
 
           # 10 GB swap — Docker + OpenClash 编译很耗内存
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
           sudo fallocate -l 10G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
