@@ -24,8 +24,8 @@ env:
   # 选项 B：immortalwrt-mt798x（MediaTek 闭源驱动，WiFi 稳定性更好）
   # 若要换此源，注释掉上面两行，取消注释下面两行，同时将 config 中
   # CONFIG_PACKAGE_wpad-openssl-mbedtls 改为 CONFIG_PACKAGE_kmod-mt76=y
-   REPO_URL: https://github.com/immortalwrt-mt798x/immortalwrt
-   REPO_BRANCH: openwrt-24.10
+  REPO_URL: https://github.com/immortalwrt-mt798x/immortalwrt
+  REPO_BRANCH: openwrt-24.10
 
   CONFIG_FILE: wh3000pro.config
   DIY_P1_SH: scripts/diy-part1.sh
@@ -232,7 +232,7 @@ jobs:
         id: tag
         if: ${{ env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success' }}
         run: |
-          # 动态获取内核版本（编译完成后在 immortalwrt 目录执行）
+          # 动态获取内核版本
           cd immortalwrt
           KERNEL_VER=$(make kernelversion 2>/dev/null || echo "未知")
           cd ..
