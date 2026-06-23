@@ -1,0 +1,7 @@
+firmware/
+*.log
+build_error.log
+release_notes.md
+.DS_Store
+*.swp
+
