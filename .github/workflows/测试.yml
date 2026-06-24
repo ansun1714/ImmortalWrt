@@ -148,26 +148,25 @@ jobs:
         working-directory: immortalwrt
         run: make defconfig
 
-      # defconfig 之后内核版本已确定，直接从源码读取完整版本号
       - name: 获取内核版本
         id: kernel
         working-directory: immortalwrt
         run: |
-          # 读取 target 目录下的内核版本文件，格式如 6.6.87
-          KVER=$(cat include/kernel-version.mk 2>/dev/null \
-            | grep -E "^LINUX_VERSION-[0-9]" \
-            | head -1 \
-            | sed 's/.*:=[ ]*//' \
-            | tr -d ' ')
-          # 兜底：从 Makefile 读
+          # 从 include/kernel-version.mk 直接提取，格式如 6.6.87
+          KVER=$(grep -E "^LINUX_VERSION-[0-9]" include/kernel-version.mk 2>/dev/null \
+            | head -1 | awk -F':=' '{print $2}' | tr -d ' \t')
+
+          # 兜底：从 target/linux/mediatek Makefile 读
           if [ -z "$KVER" ]; then
-            KVER=$(grep -r "LINUX_VERSION:=" target/linux/mediatek/ 2>/dev/null \
-              | head -1 | sed 's/.*:=[ ]*//' | tr -d ' ')
+            KVER=$(grep -rh "^LINUX_VERSION:=" target/linux/mediatek/ 2>/dev/null \
+              | head -1 | awk -F':=' '{print $2}' | tr -d ' \t')
           fi
-          # 再兜底：make kernelversion（最准但慢）
+
+          # 最终兜底：不跑 make，写固定值
           if [ -z "$KVER" ]; then
-            KVER=$(make --no-print-directory kernelversion 2>/dev/null || echo "6.6")
+            KVER="6.6"
           fi
+
           echo "▶ 内核版本：$KVER"
           echo "version=$KVER" >> $GITHUB_OUTPUT
 
@@ -230,7 +229,7 @@ jobs:
         if: env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success'
         run: |
           # 命名规则：设备名-内核版本-日期时间
-          # 例：wh3000pro-6.6.87-20260624-1033
+          # 例：wh3000pro-6.6.87-20260625-0325
           TAG="${{ matrix.device }}-${{ steps.kernel.outputs.version }}-$(date +%Y%m%d-%H%M)"
           echo "release_tag=$TAG" >> $GITHUB_OUTPUT
           cat > release_notes.md << EOF
