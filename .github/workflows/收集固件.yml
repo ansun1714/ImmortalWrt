@@ -1,0 +1,25 @@
+- name: 收集固件
+        id: collect
+        if: steps.compile.outputs.status == 'success' || steps.compile_fallback.outputs.status == 'success'
+        run: |
+          mkdir -p firmware
+          FIRM_DIR=immortalwrt/bin/targets/mediatek/filogic
+          echo "▶ 目录下所有文件："
+          ls -lh "$FIRM_DIR/" || echo "目录不存在"
+          # 先列出来看看实际文件名
+          find "$FIRM_DIR" -type f ! -name "*.json" ! -name "*.buildinfo" \
+            | sort | tee /tmp/all_firmware.txt
+          # 按设备名匹配（宽松匹配，兼容 huasifei_ 前缀）
+          find "$FIRM_DIR" -type f \
+            \( -name "*${{ matrix.device }}*sysupgrade*" \
+            -o -name "*${{ matrix.device }}*factory*" \) \
+            ! -name "*.json" ! -name "*.buildinfo" \
+            -exec cp -v {} firmware/ \;
+          # 如果还是没找到，打印所有文件名帮助排查
+          if [ -z "$(ls -A firmware/*.bin 2>/dev/null)" ]; then
+            echo "!!! 未找到匹配固件，目录内容："
+            cat /tmp/all_firmware.txt
+          fi
+          cp immortalwrt/.config firmware/${{ matrix.device }}_full.config
+          echo "▶ 收集结果：" && ls -lh firmware/
+          echo "status=success" >> $GITHUB_OUTPUT
