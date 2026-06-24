@@ -70,16 +70,30 @@ jobs:
             /opt/ghc \
             /opt/hostedtoolcache/CodeQL \
             /usr/local/share/boost \
+            /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/node \
+            /opt/hostedtoolcache/Python \
+            /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/PyPy \
+            /usr/local/share/chromium \
+            /usr/share/swift \
+            /usr/lib/jvm \
+            /usr/share/mysql \
+            /usr/share/man \
+            /usr/share/doc \
             "$AGENT_TOOLSDIRECTORY" || true
           sudo apt-get autoremove -y --purge || true
           sudo apt-get clean
+          sudo docker image prune -af 2>/dev/null || true
+          echo "▶ 清理后可用空间："
+          df -hT
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
           sudo fallocate -l 10G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-          echo "▶ 释放后可用空间："
+          echo "▶ 挂载 Swap 后："
           df -hT
 
       - name: 安装编译依赖
@@ -152,21 +166,15 @@ jobs:
         id: kernel
         working-directory: immortalwrt
         run: |
-          # 从 include/kernel-version.mk 直接提取，格式如 6.6.87
           KVER=$(grep -E "^LINUX_VERSION-[0-9]" include/kernel-version.mk 2>/dev/null \
             | head -1 | awk -F':=' '{print $2}' | tr -d ' \t')
-
-          # 兜底：从 target/linux/mediatek Makefile 读
           if [ -z "$KVER" ]; then
             KVER=$(grep -rh "^LINUX_VERSION:=" target/linux/mediatek/ 2>/dev/null \
               | head -1 | awk -F':=' '{print $2}' | tr -d ' \t')
           fi
-
-          # 最终兜底：不跑 make，写固定值
           if [ -z "$KVER" ]; then
             KVER="6.6"
           fi
-
           echo "▶ 内核版本：$KVER"
           echo "version=$KVER" >> $GITHUB_OUTPUT
 
@@ -208,12 +216,21 @@ jobs:
         run: |
           mkdir -p firmware
           FIRM_DIR=immortalwrt/bin/targets/mediatek/filogic
+          echo "▶ 目录下所有文件："
+          ls -lh "$FIRM_DIR/" || echo "目录不存在"
+          find "$FIRM_DIR" -type f ! -name "*.json" ! -name "*.buildinfo" \
+            | sort | tee /tmp/all_firmware.txt
           find "$FIRM_DIR" -type f \
-            \( -name "*wh3000*sysupgrade*" -o -name "*wh3000*factory*" \) \
+            \( -name "*${{ matrix.device }}*sysupgrade*" \
+            -o -name "*${{ matrix.device }}*factory*" \) \
             ! -name "*.json" ! -name "*.buildinfo" \
             -exec cp -v {} firmware/ \;
+          if [ -z "$(ls -A firmware/*.bin 2>/dev/null)" ]; then
+            echo "!!! 未找到匹配固件，目录内容："
+            cat /tmp/all_firmware.txt
+          fi
           cp immortalwrt/.config firmware/${{ matrix.device }}_full.config
-          echo "▶ 固件列表：" && ls -lh firmware/
+          echo "▶ 收集结果：" && ls -lh firmware/
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 上传 Artifact（7天保留）
@@ -228,8 +245,6 @@ jobs:
         id: tag
         if: env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success'
         run: |
-          # 命名规则：设备名-内核版本-日期时间
-          # 例：wh3000pro-6.6.87-20260625-0325
           TAG="${{ matrix.device }}-${{ steps.kernel.outputs.version }}-$(date +%Y%m%d-%H%M)"
           echo "release_tag=$TAG" >> $GITHUB_OUTPUT
           cat > release_notes.md << EOF
