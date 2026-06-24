@@ -1,27 +1,31 @@
-name: Build ImmortalWrt · WH3000 Pro
+name: Build ImmortalWrt · WH3000 Series
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'wh3000pro.config'
+      - '*.config'
       - 'scripts/**'
       - 'files/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
+      device:
+        description: '选择编译设备'
+        type: choice
+        options:
+          - wh3000pro
+          - wh3000
+          - all
+        default: wh3000pro
       clean_build:
         description: '强制全量编译（清除 ccache）'
         type: boolean
         default: false
 
 env:
-  # immortalwrt-mt798x 需要访问 gerrit.mediatek.inc（私有域名），
-  # GitHub Actions 无法访问，编译必定失败，只能用官方源
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-24.10
-
-  CONFIG_FILE: wh3000pro.config
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
   UPLOAD_FIRMWARE: true
@@ -29,9 +33,28 @@ env:
   TZ: Asia/Shanghai
 
 jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: 生成编译矩阵
+        id: set-matrix
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'wh3000pro' }}"
+          if [ "$DEVICE" = "all" ]; then
+            echo 'matrix={"device":["wh3000pro","wh3000"]}' >> $GITHUB_OUTPUT
+          else
+            echo "matrix={\"device\":[\"$DEVICE\"]}" >> $GITHUB_OUTPUT
+          fi
+
   build:
+    needs: prepare
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: 检出仓库
@@ -80,7 +103,6 @@ jobs:
         run: |
           git clone -b $REPO_BRANCH --single-branch --filter=blob:none \
             $REPO_URL immortalwrt
-          echo "REPO_PATH=$GITHUB_WORKSPACE/immortalwrt" >> $GITHUB_ENV
 
       - name: 恢复 ccache 缓存
         if: ${{ !inputs.clean_build }}
@@ -90,10 +112,10 @@ jobs:
             immortalwrt/.ccache
             immortalwrt/staging_dir/host
             immortalwrt/staging_dir/hostpkg
-          key: imwrt-wh3000pro-${{ runner.os }}-${{ hashFiles('wh3000pro.config') }}-${{ github.sha }}
+          key: imwrt-${{ matrix.device }}-${{ runner.os }}-${{ hashFiles(format('{0}.config', matrix.device)) }}-${{ github.sha }}
           restore-keys: |
-            imwrt-wh3000pro-${{ runner.os }}-${{ hashFiles('wh3000pro.config') }}-
-            imwrt-wh3000pro-${{ runner.os }}-
+            imwrt-${{ matrix.device }}-${{ runner.os }}-${{ hashFiles(format('{0}.config', matrix.device)) }}-
+            imwrt-${{ matrix.device }}-${{ runner.os }}-
 
       - name: 执行 diy-part1.sh
         working-directory: immortalwrt
@@ -108,7 +130,7 @@ jobs:
           ./scripts/feeds install -a
 
       - name: 复制 .config
-        run: cp $CONFIG_FILE immortalwrt/.config
+        run: cp ${{ matrix.device }}.config immortalwrt/.config
 
       - name: 执行 diy-part2.sh
         working-directory: immortalwrt
@@ -125,6 +147,29 @@ jobs:
       - name: make defconfig
         working-directory: immortalwrt
         run: make defconfig
+
+      # defconfig 之后内核版本已确定，直接从源码读取完整版本号
+      - name: 获取内核版本
+        id: kernel
+        working-directory: immortalwrt
+        run: |
+          # 读取 target 目录下的内核版本文件，格式如 6.6.87
+          KVER=$(cat include/kernel-version.mk 2>/dev/null \
+            | grep -E "^LINUX_VERSION-[0-9]" \
+            | head -1 \
+            | sed 's/.*:=[ ]*//' \
+            | tr -d ' ')
+          # 兜底：从 Makefile 读
+          if [ -z "$KVER" ]; then
+            KVER=$(grep -r "LINUX_VERSION:=" target/linux/mediatek/ 2>/dev/null \
+              | head -1 | sed 's/.*:=[ ]*//' | tr -d ' ')
+          fi
+          # 再兜底：make kernelversion（最准但慢）
+          if [ -z "$KVER" ]; then
+            KVER=$(make --no-print-directory kernelversion 2>/dev/null || echo "6.6")
+          fi
+          echo "▶ 内核版本：$KVER"
+          echo "version=$KVER" >> $GITHUB_OUTPUT
 
       - name: 下载依赖包
         working-directory: immortalwrt
@@ -154,7 +199,7 @@ jobs:
         if: steps.compile.outputs.status != 'success' && steps.compile_fallback.outputs.status != 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: build-error-log-${{ github.run_number }}
+          name: build-error-log-${{ matrix.device }}-${{ github.run_number }}
           path: /tmp/build_j1.log
           retention-days: 3
 
@@ -165,10 +210,10 @@ jobs:
           mkdir -p firmware
           FIRM_DIR=immortalwrt/bin/targets/mediatek/filogic
           find "$FIRM_DIR" -type f \
-            \( -name "*wh3000-pro*sysupgrade*" -o -name "*wh3000-pro*factory*" \) \
+            \( -name "*wh3000*sysupgrade*" -o -name "*wh3000*factory*" \) \
             ! -name "*.json" ! -name "*.buildinfo" \
             -exec cp -v {} firmware/ \;
-          cp immortalwrt/.config firmware/wh3000pro_full.config
+          cp immortalwrt/.config firmware/${{ matrix.device }}_full.config
           echo "▶ 固件列表：" && ls -lh firmware/
           echo "status=success" >> $GITHUB_OUTPUT
 
@@ -176,7 +221,7 @@ jobs:
         if: env.UPLOAD_FIRMWARE == 'true' && steps.collect.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-wh3000pro-${{ github.run_number }}
+          name: firmware-${{ matrix.device }}-${{ github.run_number }}
           path: firmware/
           retention-days: 7
 
@@ -184,14 +229,31 @@ jobs:
         id: tag
         if: env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success'
         run: |
-          TAG="wh3000pro-$(date +%Y%m%d-%H%M)"
+          # 命名规则：设备名-内核版本-日期时间
+          # 例：wh3000pro-6.6.87-20260624-1033
+          TAG="${{ matrix.device }}-${{ steps.kernel.outputs.version }}-$(date +%Y%m%d-%H%M)"
           echo "release_tag=$TAG" >> $GITHUB_OUTPUT
           cat > release_notes.md << EOF
-          ## WH3000 Pro · ImmortalWrt 固件
-          - 编译时间：$(date '+%Y-%m-%d %H:%M:%S CST')
-          - 源码：immortalwrt/immortalwrt openwrt-24.10
-          - 目标：MT7981 Filogic / huasifei_wh3000-pro
-          - 内核：Linux 6.6 LTS
+          ## ${{ matrix.device }} · ImmortalWrt 固件
+
+          - 📅 编译时间：$(date '+%Y-%m-%d %H:%M:%S CST')
+          - 🌿 源码：immortalwrt/immortalwrt \`openwrt-24.10\`
+          - 📦 目标：MT7981 Filogic / huasifei_${{ matrix.device }}
+          - 🔧 内核：Linux ${{ steps.kernel.outputs.version }}
+
+          ### 内置功能
+          - 代理：SSR-Plus + OpenClash
+          - 容器：Docker + Compose + dockerman
+          - 4G/5G：QModem + quectel-CM-5G-M
+          - IPTV：msd_lite + rtp2httpd + unicast-proxy + iptv-manager
+          - VPN：OpenVPN Server
+          - 共享：Samba4 + USB 存储（ext4/exfat/ntfs3）
+          - 网络：TurboACC · BBR · FullconeNAT · 硬件卸载
+          - 工具：Lucky · UPnP · WOL · vlmcsd
+
+          ### 刷机
+          - \`*-sysupgrade.bin\` → LuCI 升级或 SSH \`sysupgrade -n\`
+          - \`*-factory.bin\` → U-Boot Web（WAN 口接电脑，开机按 Reset 5 秒）
           EOF
 
       - name: 发布 GitHub Release
