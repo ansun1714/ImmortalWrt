@@ -16,15 +16,9 @@ on:
         default: false
 
 env:
-  # ── 源码选择（二选一，默认用官方 ImmortalWrt openwrt-24.10）──────
-  # 选项 A：官方 ImmortalWrt（WH3000 Pro 从 24.10.x 起原生支持）
-  # REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # REPO_BRANCH: openwrt-24.10
-
-  # 选项 B：immortalwrt-mt798x（MediaTek 闭源驱动，WiFi 稳定性更好）
-  # 若要换此源，注释掉上面两行，取消注释下面两行，同时将 config 中
-  # CONFIG_PACKAGE_wpad-openssl-mbedtls 改为 CONFIG_PACKAGE_kmod-mt76=y
-  REPO_URL: https://github.com/immortalwrt-mt798x/immortalwrt
+  # immortalwrt-mt798x 需要访问 gerrit.mediatek.inc（私有域名），
+  # GitHub Actions 无法访问，编译必定失败，只能用官方源
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-24.10
 
   CONFIG_FILE: wh3000pro.config
@@ -43,7 +37,6 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      # ── 磁盘扩容 ──────────────────────────────────────────────────
       - name: 释放磁盘空间 + 挂载 Swap
         run: |
           echo "▶ 释放前可用空间："
@@ -57,8 +50,6 @@ jobs:
             "$AGENT_TOOLSDIRECTORY" || true
           sudo apt-get autoremove -y --purge || true
           sudo apt-get clean
-
-          # 10 GB swap — Docker + OpenClash 编译很耗内存
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
           sudo fallocate -l 10G /swapfile
@@ -68,7 +59,6 @@ jobs:
           echo "▶ 释放后可用空间："
           df -hT
 
-      # ── 依赖安装 ──────────────────────────────────────────────────
       - name: 安装编译依赖
         run: |
           sudo apt-get update -qq
@@ -86,25 +76,12 @@ jobs:
             texinfo uglifyjs unzip upx-ucl vim wget xmlto xxd zlib1g-dev
           pip3 install pyelftools --quiet
 
-      # ── 克隆源码（自动探测默认分支）──────────────────────────────
       - name: 克隆 ImmortalWrt 源码
         run: |
-          # 若指定分支存在则使用，否则获取仓库默认分支
-          if git ls-remote --heads $REPO_URL $REPO_BRANCH | grep -q $REPO_BRANCH; then
-            BRANCH=$REPO_BRANCH
-          else
-            echo "指定分支 $REPO_BRANCH 不存在，获取默认分支…"
-            BRANCH=$(git ls-remote --symref $REPO_URL HEAD | awk '/^ref:/ {sub(/refs\/heads\//,"",$2); print $2}')
-            if [ -z "$BRANCH" ]; then
-              echo "错误：无法探测默认分支，请手动设置 REPO_BRANCH"
-              exit 1
-            fi
-          fi
-          echo "使用分支：$BRANCH"
-          git clone -b $BRANCH --single-branch --filter=blob:none $REPO_URL immortalwrt
+          git clone -b $REPO_BRANCH --single-branch --filter=blob:none \
+            $REPO_URL immortalwrt
           echo "REPO_PATH=$GITHUB_WORKSPACE/immortalwrt" >> $GITHUB_ENV
 
-      # ── ccache 缓存恢复 ────────────────────────────────────────────
       - name: 恢复 ccache 缓存
         if: ${{ !inputs.clean_build }}
         uses: actions/cache@v4
@@ -118,7 +95,6 @@ jobs:
             imwrt-wh3000pro-${{ runner.os }}-${{ hashFiles('wh3000pro.config') }}-
             imwrt-wh3000pro-${{ runner.os }}-
 
-      # ── DIY Part 1：feeds 阶段 ─────────────────────────────────────
       - name: 执行 diy-part1.sh
         working-directory: immortalwrt
         run: |
@@ -131,20 +107,8 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # ── 配置阶段 ──────────────────────────────────────────────────
       - name: 复制 .config
         run: cp $CONFIG_FILE immortalwrt/.config
-
-      # 如果是 mt798x 源，自动将 wpad 换成 kmod-mt76
-      - name: 适配 mt798x 闭源驱动
-        if: contains(env.REPO_URL, 'immortalwrt-mt798x')
-        working-directory: immortalwrt
-        run: |
-          if grep -q "CONFIG_PACKAGE_wpad-openssl-mbedtls=y" .config; then
-            sed -i 's/CONFIG_PACKAGE_wpad-openssl-mbedtls=y/# CONFIG_PACKAGE_wpad-openssl-mbedtls is not set/' .config
-            echo "CONFIG_PACKAGE_kmod-mt76=y" >> .config
-            echo "▶ 已替换：wpad-openssl-mbedtls → kmod-mt76"
-          fi
 
       - name: 执行 diy-part2.sh
         working-directory: immortalwrt
@@ -162,14 +126,12 @@ jobs:
         working-directory: immortalwrt
         run: make defconfig
 
-      # ── 下载软件包 ────────────────────────────────────────────────
       - name: 下载依赖包
         working-directory: immortalwrt
         run: |
           make download -j$(nproc) V=s 2>&1 | grep -E "^(ERROR|WARNING)" || true
           find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
 
-      # ── 编译（多核 + 退避）──────────────────────────────────────
       - name: 多核编译
         id: compile
         working-directory: immortalwrt
@@ -177,33 +139,25 @@ jobs:
         run: |
           set -o pipefail
           make -j$(nproc) V=s 2>&1 | tee /tmp/build.log
-          ret=$?
-          if [ $ret -eq 0 ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-          fi
+          [ $? -eq 0 ] && echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 单核降级编译（回退）
         if: steps.compile.outputs.status != 'success'
+        id: compile_fallback
         working-directory: immortalwrt
         continue-on-error: true
-        id: compile_fallback
         run: |
-          echo "▶ 多核编译失败，切换单核详细输出..."
           make -j1 V=s 2>&1 | tee /tmp/build_j1.log
-          ret=$?
-          if [ $ret -eq 0 ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-          fi
+          [ $? -eq 0 ] && echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 上传错误日志
-        if: failure() && steps.compile.outputs.status != 'success' && steps.compile_fallback.outputs.status != 'success'
+        if: steps.compile.outputs.status != 'success' && steps.compile_fallback.outputs.status != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: build-error-log-${{ github.run_number }}
           path: /tmp/build_j1.log
           retention-days: 3
 
-      # ── 收集固件 ──────────────────────────────────────────────────
       - name: 收集固件
         id: collect
         if: steps.compile.outputs.status == 'success' || steps.compile_fallback.outputs.status == 'success'
@@ -214,55 +168,34 @@ jobs:
             \( -name "*wh3000-pro*sysupgrade*" -o -name "*wh3000-pro*factory*" \) \
             ! -name "*.json" ! -name "*.buildinfo" \
             -exec cp -v {} firmware/ \;
-          # 同时保存最终 .config 方便复现
           cp immortalwrt/.config firmware/wh3000pro_full.config
           echo "▶ 固件列表：" && ls -lh firmware/
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 上传 Artifact（7天保留）
-        if: ${{ env.UPLOAD_FIRMWARE == 'true' && steps.collect.outputs.status == 'success' }}
+        if: env.UPLOAD_FIRMWARE == 'true' && steps.collect.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: firmware-wh3000pro-${{ github.run_number }}
           path: firmware/
           retention-days: 7
 
-      # ── Release 发布 ──────────────────────────────────────────────
       - name: 生成 Release 标签
         id: tag
-        if: ${{ env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success' }}
+        if: env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success'
         run: |
-          # 动态获取内核版本
-          cd immortalwrt
-          KERNEL_VER=$(make kernelversion 2>/dev/null || echo "未知")
-          cd ..
           TAG="wh3000pro-$(date +%Y%m%d-%H%M)"
           echo "release_tag=$TAG" >> $GITHUB_OUTPUT
           cat > release_notes.md << EOF
           ## WH3000 Pro · ImmortalWrt 固件
-
-          - 📅 编译时间：$(date '+%Y-%m-%d %H:%M:%S CST')
-          - 🌿 源码：$REPO_URL \`$REPO_BRANCH\`
-          - 📦 目标：MT7981 Filogic / huasifei_wh3000-pro
-          - 🔧 内核：Linux ${KERNEL_VER}
-
-          ### 内置功能
-          - 代理：SSR-Plus + OpenClash
-          - 容器：Docker + Compose + dockerman
-          - 4G/5G：QModem + quectel-CM-5G-M
-          - IPTV：msd_lite + rtp2httpd + unicast-proxy + iptv-manager
-          - VPN：OpenVPN Server
-          - 共享：Samba + USB 存储（ext4/exfat/ntfs3）
-          - 网络：TurboACC · BBR · FullconeNAT · 硬件卸载
-          - 工具：Lucky · UPnP · WOL · vlmcsd
-
-          ### 刷机
-          - \`*-sysupgrade.bin\` → LuCI 升级或 SSH \`sysupgrade -n\`
-          - \`*-factory.bin\` → U-Boot Web（WAN 口接电脑，开机按 Reset 5 秒）
+          - 编译时间：$(date '+%Y-%m-%d %H:%M:%S CST')
+          - 源码：immortalwrt/immortalwrt openwrt-24.10
+          - 目标：MT7981 Filogic / huasifei_wh3000-pro
+          - 内核：Linux 6.6 LTS
           EOF
 
       - name: 发布 GitHub Release
-        if: ${{ env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success' }}
+        if: env.UPLOAD_RELEASE == 'true' && steps.collect.outputs.status == 'success'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
